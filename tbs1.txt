@@ -1,0 +1,376 @@
+++++++++++++++++++++++++++++******2nd********+++++++++++++++++++++++++++++++++
+
+TO Reduce human error.
+----------------------
+select 'alter tablespace '||upper('&Tablespace_name')||' add datafile '''||'+'||a.name||''' size '||'&Size_GB'||'G autoextend ON;' from v$asm_diskgroup a where a.name like '%DATA%';
+
+View datafiles details of TBS
+------------------------------
+set lines 200
+set pages 200
+col file_name format a80
+col MBytes format 999999.99
+col Max_Mbytes format 999999.99
+col NKBytes format 999999.99
+select 
+ file_name,
+bytes/1024/1024 USED_MB,
+autoextensible,
+(increment_by*8192)/1024/1024 NEXT_MB,
+maxbytes/1024/1024 MAX_MB 
+from 
+ dba_data_files
+where 
+ tablespace_name=upper('&_Tablespace_Name');
+ 
+ Used % of TBS
+--------------
+
+set lines 300
+select t.tablespace_name, round(t.bytes/(1024*1024)) MAX_MB,
+round(currbytes/(1024*1024)) CURR_MB,
+round(e.bytes/(1024*1024)) USED_MB,
+round((t.bytes - e.bytes)/(1024*1024)) FREE_MB,
+round((t.bytes - e.bytes)*100/t.bytes) "%Free",
+round(e.bytes*100/t.bytes) "%Used"
+from (select tablespace_name, sum(greatest(bytes,MAXBYTES)) bytes, sum(bytes) currbytes
+from dba_data_files group by tablespace_name) t,(select tablespace_name,bytes bytes from sm$ts_used) e
+where t.tablespace_name=e.tablespace_name
+and round((e.bytes)*100/t.bytes) >1
+and t.tablespace_name not like '%zz%'
+order by 7 desc;
+
+Select fs.tablespace_name,(df.totalspace - fs.freespace) as Used_Space ,fs.freespace,df.totalspace,round(100 * (fs.freespace / df.totalspace)) as Free_Percentage
+	from
+	   (select
+		  tablespace_name,
+		  round(sum(bytes) / 1048576) TotalSpace
+	   from
+		  dba_data_files
+	   group by
+		  tablespace_name
+	   ) df,
+	   (select
+		  tablespace_name,
+		  round(sum(bytes) / 1048576) FreeSpace
+	   from
+		  dba_free_space
+	   group by
+		  tablespace_name
+	   ) fs, v$instance
+	where
+	   df.tablespace_name = fs.tablespace_name
+	  and df.tablespace_name like 'FLSCW_DLY_ADJ_Y19P04'
+	-- and round(100 * (fs.freespace / df.totalspace))<20
+	;
+
+Add datafile examples:
+----------------------
+alter tablespace MERMS add datafile '+DATA' size 32G autoextend ON;
+alter tablespace PSSIND03 add datafile '+DATA' size 31G autoextend ON;
+
+
+Add temp space examples:
+----------------------
+SELECT tablespace_name, file_name, bytes/1024/1024 ,maxbytes/1024/1024 FROM dba_temp_files WHERE tablespace_name = 'TEMP';
+
+ alter database tempfile '+DATA/tmapbb1/tempfile/temp.892.921443609' autoextend on maxsize 2G;
+ alter database tempfile '+DATA/tmapbb1/tempfile/temp.892.921443609' size 1G;
+ 
+++++++++++++++++++++++++++++******2nd********+++++++++++++++++++++++++++++++++
+space wala
+
+set lines 500
+set pages 100
+col tspace form a30 Heading "Tablespace"
+col tot_ts_size form 99999999 Heading "Size (Mb)"
+col free_ts_size form 99999999 Heading "Free (Mb)"
+col used_ts_size form 99999999 Heading "Used (Mb)"
+col used_pct form 999 Heading "% Used"
+col free_pct form 999 Heading "% Free"
+col warning form a25 Heading "Message"
+break on report
+compute sum label total of tot_ts_size on report
+compute sum label total of used_ts_size on report
+compute sum label total of free_ts_size on report
+
+(select  df.tablespace_name tspace
+,       round(sum(fs.bytes_free + fs.bytes_used) / 1024 / 1024, 2) tot_ts_size
+,       round(sum(fs.Bytes_used) / 1024 / 1024, 2)  used_ts_size
+,       round(sum(fs.bytes_free) / 1024 / 1024, 2)  free_ts_size
+,       round(sum(fs.Bytes_used ) * 100 / sum((fs.bytes_free + fs.bytes_used))) used_pct
+,       round(sum(fs.Bytes_free ) * 100 / sum((fs.bytes_free + fs.bytes_used))) free_pct
+,      decode(sign(sum(round(((fs.bytes_free + fs.bytes_used)-fs.bytes_free)*100/(fs.bytes_free + fs.bytes_used))) - 80), 1, '
+!ALERT', '') warning
+from   SYS.V_$TEMP_SPACE_HEADER fs
+,      dba_temp_files df
+where fs.tablespace_name(+) = df.tablespace_name
+  and fs.file_id(+) = df.file_id
+group by df.tablespace_name
+union
+SELECT df.tablespace_name tspace
+,      df.bytes/(1024*1024) tot_ts_size
+,      round((df.bytes-sum(fs.bytes))/(1024*1024)) used_ts_size
+,      sum(fs.bytes)/(1024*1024) free_ts_size
+,      round((df.bytes-sum(fs.bytes))*100/df.bytes) used_pct
+,      round(sum(fs.bytes)*100/df.bytes) free_pct
+,      decode(sign(round((df.bytes-sum(fs.bytes))*100/df.bytes) - 80), 1, '!ALERT', '') warning
+FROM dba_free_space fs
+, (select tablespace_name, sum(bytes) bytes
+   from dba_data_files
+   group by tablespace_name
+   ) df
+WHERE fs.tablespace_name(+) = df.tablespace_name
+GROUP BY df.tablespace_name, df.bytes)
+union
+(select tablespace_name tspace,
+1,1,0 free_ts_size,100 used_pct,0 free_pct,'!' warning from dba_data_files
+group by tablespace_name
+minus
+select tablespace_name tspace,1,1,0 free_ts_size,100 used_pct,0 free_pct,'!' warning
+from dba_free_space
+group by tablespace_name)
+order by 4
+;
+
+
+++++++++++++++++++++++*****1st*****++++++++++++++++++++++++++++++++++++++++++++
+
+TO Reduce human error.
+----------------------
+select 'alter tablespace '||upper('&Tablespace_name')||' add datafile '''||'+'||a.name||''' size '||'&Size_GB'||'G autoextend ON next 25M maxsize '||'&Maxsize_GB'||'G;' from v$asm_diskgroup a where a.name like '%DATA%';
+
+Check ASM space
+---------------
+set line 500
+select name,total_mb/1024,free_mb/1024,(((total_mb-free_mb)/total_mb)*100) as "USED_PERCENT" from v$asm_diskgroup;
+
+View datafiles details of TBS
+------------------------------
+set lines 200
+set pages 200
+col file_name format a80
+col MBytes format 999999.99
+col Max_Mbytes format 999999.99
+col NKBytes format 999999.99
+select 
+ file_name,
+bytes/1024/1024 USED_MB,
+autoextensible,
+(increment_by*8192)/1024/1024 NEXT_MB,
+maxbytes/1024/1024 MAX_MB 
+from 
+ dba_data_files
+where 
+ tablespace_name=upper('&_Tablespace_Name');
+
+Used % of TBS
+--------------
+
+select tablespace_name,
+  ((used_space*8192)/1024/1024/1024) "USED_GB",
+  ((tablespace_size*8192)/1024/1024/1024) "TOTAL_GB",
+  USED_PERCENT 
+FROM dba_tablespace_usage_metrics 
+where tablespace_name ='&tname';
+
+
+select tablespace_name,
+  ((used_space*8192)/1024/1024/1024) "USED_GB",
+  ((tablespace_size*8192)/1024/1024/1024) "TOTAL_GB",
+  USED_PERCENT 
+FROM dba_tablespace_usage_metrics 
+where tablespace_name like '%GDBNCP_DATA%' ;
+
+Add datafile examples:
+----------------------
+alter tablespace STG_ARCV_2013 add datafile '/dd/pxdmgddm08/GDARCP1/oradata/datafiles/STG_ARCV_2013_16.dbf' SIZE 1G AUTOEXTEND ON NEXT 104857600 MAXSIZE 31G;
+/dd/pxdmgddm08/GDARCP1/oradata/datafiles/BI_ARCV_2012_9.dbf
+
+alter tablespace BI_ARCV_2012 add datafile '/dd/pxdmgddm08/GDARCP1/oradata/datafiles/BI_ARCV_2012_10.dbf' SIZE 1G AUTOEXTEND ON NEXT 104857600 MAXSIZE 31G;
+/dd/pxdmgddm08/GDARCP1/oradata/datafiles/STG_ARCV_2013_35.dbf
+
+alter tablespace STG_ARCV_2013 add datafile '/dd/pxdmgddm08/GDARCP1/oradata/datafiles/STG_ARCV_2013_51.dbf' SIZE 1G AUTOEXTEND ON NEXT 104857600 MAXSIZE 31G;
+
+/dd/pxdmgddm08/GDARCP1/oradata/datafiles/STG_ARCV_2013_42.dbf
+
+alter tablespace JESIE_DATA1 add datafile '/jes1/oradata1/jesp1/jesie_data9.dmp'  SIZE  1G AUTOEXTEND ON NEXT 10M MAXSIZE 8g;
+
+
+Extend existing datafile
+-------------------------
+alter database datafile 'GDRPTP_DATA/gdrptp/datafile/fct_data_201405.882.848885165' autoextend on maxsize 31G;
+
+
+check Bigfile
+---------------------
+select bigfile from dba_tablespaces where tablespace_name='STG_DATA';
+
+
+
+check owner and table_name in a tablespace
+----------------------------------------------
+
+select owner, table_name, tablespace_name from dba_tables where tablespace_name='STG_ARCV_2013';
+
+
+CHECKING DATES FOR ON WHICH DATE DATAFILE ADDED:
+----------------------------------------------
+
+select d.file_name,df.file#,df.creation_time from dba_data_files d,v$datafile df where d.file_id=df.file# and d.tablespace_name='&TNAME' ORDER BY 3 ASC;
+
+++++++++++++++++++++++*****1st*****++++++++++++++++++++++++++++++++++++++++++++
+
+
+set lines 300
+select t.tablespace_name, round(t.bytes/(1024*1024)) MAX_MB,
+round(currbytes/(1024*1024)) CURR_MB,
+round(e.bytes/(1024*1024)) USED_MB,
+round((t.bytes - e.bytes)/(1024*1024)) FREE_MB,
+round((t.bytes - e.bytes)*100/t.bytes) "%Free",
+round(e.bytes*100/t.bytes) "%Used"
+from (select tablespace_name, sum(greatest(bytes,MAXBYTES)) bytes, sum(bytes) currbytes
+from dba_data_files group by tablespace_name) t,(select tablespace_name,bytes bytes from sm$ts_used) e
+where t.tablespace_name=e.tablespace_name
+and round((e.bytes)*100/t.bytes) >1
+and t.tablespace_name not like '%zz%'
+order by 7 desc;
+
+TABLESPACE_NAME                    MAX_MB    CURR_MB    USED_MB    FREE_MB      %Free      %Used
+------------------------------ ---------- ---------- ---------- ---------- ---------- ----------
+PSSTAB03                          1013756     992114     800500     213256         21         79
+PSSIND03                          1212393    1198906     926900     285493         24         76
+PSSIND02                           229375     111312      94050     135325         59         41
+PSSTAB01                           131071      92892      49480      81591         62         38
+PSSTAB02                            98304      30720      24950      73354         75         25
+GASTAB01                             2041       2041        250       1791         88         12
+GASIND01                             2041       2041        250       1791         88         12
+GASIND02                             2001       2001        200       1801         90         10
+GASTAB02                             2001       2001        200       1801         90         10
+PSSIND01                            98304      10041       6850      91454         93          7
+SYSAUX                              32768       3000       1891      30877         94          6
+SYSTEM                              32768       2048       1229      31539         96          4
+QGCPOWER                            32768       2048       1022      31746         97          3
+
+13 rows selected.
+
+SQL>  col "Tablespace" for a22
+ col "Used MB" for 99,999,999
+col "Free MB" for 99,999,999
+SQL> SQL> SQL>   col "Total MB" for 99,999,999
+SQL>
+SQL>  select df.tablespace_name "Tablespace",
+    totalusedspace "Used MB",
+    (df.totalspace - tu.totalusedspace) "Free MB",
+  2    3    4  df.totalspace "Total MB",
+  5    round(100 * ( (df.totalspace - tu.totalusedspace)/ df.totalspace))
+  6   "Pct. Free"
+  7   from
+ (select tablespace_name,
+  8    9  round(sum(bytes) / 1048576) TotalSpace
+from dba_data_files
+ 10   11    group by tablespace_name) df,
+ 12  (select round(sum(bytes)/(1024*1024)) totalusedspace, tablespace_name
+ from dba_segments
+ 13   14   group by tablespace_name) tu
+ 15  where df.tablespace_name = tu.tablespace_name ;
+
+Tablespace                 Used MB     Free MB    Total MB  Pct. Free
+---------------------- ----------- ----------- ----------- ----------
+GASIND01                       250       1,791       2,041         88
+GASIND02                       200       1,801       2,001         90
+UNDOTBS1                       578      37,589      38,167         98
+SYSAUX                       1,891       1,109       3,000         37
+PSSIND01                     6,850       3,191      10,041         32
+PSSIND03                   926,900     272,006   1,198,906         23
+USERS                            0           5           5        100
+PSSTAB01                    49,480      43,412      92,892         47
+PSSIND02                    94,050      17,262     111,312         16
+GASTAB02                       200       1,801       2,001         90
+SYSTEM                       1,229         819       2,048         40
+PSSTAB02                    24,950       5,770      30,720         19
+PSSTAB03                   800,500     191,614     992,114         19
+UNDOTBS2                       472      10,235      10,707         96
+GASTAB01                       250       1,791       2,041         88
+QGCPOWER                     1,022       1,026       2,048         50
+
+16 rows selected.
+ 
+
+------->create temp tablespace
+
+CREATE TEMPORARY TABLESPACE temp 
+      TEMPFILE '/u01/oradata/TEST1/temp01.dbf' SIZE 20M reuse
+      EXTENT MANAGEMENT LOCAL UNIFORM SIZE 16M;
+	  
+	  
+------------->
+
+
+CREATE TABLESPACE USERS datafile  '/u01/oradata/TEST1/user01.dbf' SIZE 20M reuse;
+      EXTENT MANAGEMENT LOCAL UNIFORM SIZE 16M;
+	  
+------------->
+
+
+select tablespace_name,
+  ((used_space*8192)/1024/1024/1024) "USED_GB",
+  ((tablespace_size*8192)/1024/1024/1024) "TOTAL_GB",
+  USED_PERCENT 
+FROM dba_tablespace_usage_metrics 
+where tablespace_name in (select tablespace_name from dba_tablespaces) order by 2 DESC;
+
+-------------------> view datafile
+
+set lines 200
+set pages 200
+col file_name format a80
+col MBytes format 999999.99
+col Max_Mbytes format 999999.99
+col NKBytes format 999999.99
+select 
+ file_name,
+bytes/1024/1024 USED_MB,
+autoextensible,
+(increment_by*8192)/1024/1024 NEXT_MB,
+maxbytes/1024/1024 MAX_MB 
+from 
+ dba_data_files
+where 
+ file_name like '%/oracle/elma03_12%'
+ 
+ --CLEAR BREAKS
+CLEAR COLUMNS
+CLEAR COMPUTES
+SET PAGESIZE 60
+--SET PAUSE ON
+--SET PAUSE 'Press Return to Continue'
+COL mbytes HEA " MBytes " FOR 99999.999
+COL tablespace_name HEA "    Tablespace    " FOR a30
+COL file_name HEA "                   DBF Name                  " FOR a100
+COL ts# HEA "TS#" FOR 99
+ 
+SELECT
+   ts.tablespace_name, vts.ts#, ts.file_name, ts.mbytes
+FROM
+   v$tablespace vts,
+   (
+   SELECT 
+      tablespace_name, file_id, file_name, ( bytes / 1048576 ) mbytes
+   FROM
+      sys.dba_data_files
+   UNION
+   SELECT 
+      tablespace_name, file_id, file_name, ( bytes / 1048576 ) mbytes
+   FROM
+      sys.dba_temp_files
+   ) ts
+WHERE
+   vts.name = ts.tablespace_name and file_name like '%/oracle/elma03_12%'
+ORDER BY
+   ts.tablespace_name, ts.file_id
+/
+
+
+
+
